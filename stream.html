@@ -1,0 +1,160 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: rgba(16, 16, 20, 1);
+        color: rgba(255, 255, 255, 0.82);
+      }
+    </style>
+  </head>
+  <body>
+    <button id="start">start</button>
+    <button id="stop">stop</button>
+    <h3>Question:</h3>
+    <h4 id="question"></h4>
+    <h3>Answer:</h3>
+    <h4 id="answer"></h4>
+    <script>
+      // ws
+      const url = `ws://localhost:8000/audio_to_text`
+      const ws = new WebSocket(url)
+      ws.onopen = () => {
+        console.log(`connected ${url}`)
+      }
+      ws.onerror = err => {
+        console.log(`ws err`, { err })
+      }
+      ws.onclose = () => {
+        console.log(`ws closed`)
+      }
+      ws.onmessage = msg => {
+        const { data } = msg
+        setQuestion(data)
+        getAnswer(data)
+      }
+
+      // audio
+      let mediaRecorder = null
+      const init = (async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=pcm',
+          audioBitsPerSecond: 44100
+        })
+        mediaRecorder.ondataavailable = async ({ data }) => {
+          const audioBlob = new Blob([data], { type: 'audio/webm' })
+          const buffer = await audioBlob.arrayBuffer()
+          await ws.send(buffer)
+        }
+        mediaRecorder.onstart = () => {
+          console.log('record start!')
+        }
+        mediaRecorder.onstop = ({ data }) => {
+          console.log('record stop')
+        }
+      })()
+
+      const start = () => mediaRecorder.start?.()
+      const stop = () => mediaRecorder.stop?.()
+
+      // btn
+      const startBtn = document.getElementById('start')
+      const stopBtn = document.getElementById('stop')
+      const questionDom = document.getElementById('qusestion')
+      const answerDom = document.getElementById('answer')
+
+      let question = ''
+      let answer = ''
+
+      const setQuestion = v => {
+        const regExp = /<\|.*\|>/g
+        question = v.replace(regExp, '')
+        document.getElementById('question').innerHTML = question
+      }
+
+      const setAnswer = v => {
+        const regExp = /<\|.*\|>/g
+        answer = v.replace(regExp, '')
+        document.getElementById('answer').innerHTML = answer
+      }
+
+      startBtn.addEventListener('click', () => {
+        setQuestion('')
+        setAnswer('')
+        cachedArr = []
+        start()
+        startBtn.disabled = true
+        stopBtn.disabled = false
+      })
+
+      stopBtn.addEventListener('click', () => {
+        stop()
+        startBtn.disabled = false
+        stopBtn.disabled = true
+      })
+
+      const sendMsg = async message => {
+        return fetch('http://192.168.3.100:8010/human', {
+          body: JSON.stringify({
+            text: message,
+            type: 'echo',
+            interrupt: false
+          }),
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          method: 'POST'
+        })
+      }
+
+      let cachedArr = []
+      const queueAnswer = done => {
+        const newArr = answer.split(/[，。,.]/).filter(Boolean)
+        const CL = cachedArr.length
+        const NL = newArr.length
+        if (NL <= CL && !done) return
+        let slice = newArr.slice(CL, NL - 1)
+        if (newArr[CL - 1] !== cachedArr[CL - 1]) {
+          slice = [newArr[CL - 1], ...slice]
+        }
+        slice.filter(Boolean).forEach(async v => await sendMsg(v))
+        console.log(slice)
+        cachedArr = [...newArr]
+      }
+      const getAnswer = async q => {
+        const res = await fetch('http://127.0.0.1:11434/api/generate', {
+          body: JSON.stringify({
+            model: 'qwen2.5:7b',
+            prompt: q,
+            max_tokens: 50,
+            stream: true
+          }),
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          method: 'POST'
+        })
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder('utf-8')
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            queueAnswer(true)
+            break
+          }
+          const { response } = JSON.parse(decoder.decode(value))
+          const regExp = /<\|.*\|>/g
+          text = response.replace(regExp, '')
+          setAnswer(answer + text)
+          queueAnswer()
+        }
+      }
+    </script>
+  </body>
+</html>
